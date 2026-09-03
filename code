@@ -1,0 +1,447 @@
+// ==UserScript==
+// @name         Bloxd.io VIP Engine & CPS Counter
+// @namespace    http://tampermonkey.net/
+// @version      2.2
+// @description  Gelişmiş FPS optimizasyonu, Anti-Popup, CPS sayacı ve modern VIP kontrol paneli.
+// @author       Optimizer Pro
+// @match        *://bloxd.io/*
+// @run-at       document-start
+// @noframes
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ==========================================
+    // 0. ÇOKLU SAYFA & İFRAME ENGELLEYİCİ
+    // ==========================================
+    if (window.top !== window.self) return;
+
+    try {
+        window.open = function () { return null; };
+        Object.freeze(window.open);
+    } catch (e) {}
+
+    window.addEventListener('click', function (e) {
+        let target = e.target;
+        while (target && target.tagName !== 'A') target = target.parentElement;
+        if (target && target.tagName === 'A' && target.target === '_blank') {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+
+    // ==========================================
+    // 1. GENEL DURUM VE AYARLAR
+    // ==========================================
+    const State = {
+        silenceLogs: true,
+        pixelated: true,
+        removeAds: true,
+        showCps: true,
+        resScale: 1.0,
+        fps: 0,
+        lmbCps: 0,
+        rmbCps: 0
+    };
+
+    // Konsol spamini sustur
+    function applyConsoleMute(mute) {
+        if (mute) {
+            console.log = () => {};
+            console.warn = () => {};
+            console.error = () => {};
+        }
+    }
+    applyConsoleMute(true);
+
+    // Ses motorundaki kilitlenmeleri çöz
+    try {
+        const origAudioContext = window.AudioContext || window.webkitAudioContext;
+        if (origAudioContext) {
+            window.AudioContext = function () {
+                const ctx = new origAudioContext({ latencyHint: 'interactive' });
+                if (ctx.state === 'suspended') ctx.resume();
+                return ctx;
+            };
+        }
+    } catch (e) {}
+
+    // Canvas optimizasyonu
+    function applyCanvasOptimizations() {
+        const canvases = document.querySelectorAll('canvas');
+        canvases.forEach(canvas => {
+            canvas.style.imageRendering = State.pixelated ? 'pixelated' : 'auto';
+            if (State.resScale !== 1.0) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.width && rect.height) {
+                    canvas.width = rect.width * State.resScale;
+                    canvas.height = rect.height * State.resScale;
+                }
+            }
+        });
+    }
+
+    // Reklam & çöp eleman temizleyici
+    function removeJunkElements() {
+        if (!State.removeAds) return;
+        const selectors = [
+            'iframe[src*="ad"]', 'iframe[id*="ad"]', 'div[class*="ad-"]', 
+            '.adsbygoogle', '#ad-banner', '#preroll', 'div[id*="ad"]',
+            'iframe:not([id*="game"]):not([class*="game"])'
+        ];
+        selectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach(el => el.remove());
+        });
+    }
+    setInterval(removeJunkElements, 2000);
+
+    // ==========================================
+    // 2. CPS & FPS SAYACI MOTORU
+    // ==========================================
+    const lmbClicks = [];
+    const rmbClicks = [];
+
+    window.addEventListener('mousedown', (e) => {
+        // Menüye tıklandığında CPS saymasın
+        if (e.target.closest('#opt-menu-container') || e.target.closest('#opt-toggle-btn')) return;
+
+        const now = performance.now();
+        if (e.button === 0) lmbClicks.push(now);
+        if (e.button === 2) rmbClicks.push(now);
+    }, true);
+
+    let lastFpsTime = performance.now();
+    let frameCount = 0;
+
+    function renderLoop() {
+        const now = performance.now();
+
+        // FPS hesabı
+        frameCount++;
+        if (now - lastFpsTime >= 1000) {
+            State.fps = frameCount;
+            frameCount = 0;
+            lastFpsTime = now;
+            const fpsEl = document.getElementById('opt-fps-display');
+            if (fpsEl) fpsEl.innerText = `${State.fps} FPS`;
+        }
+
+        // CPS hesabı (Son 1 saniyeden eski tıklamaları listeden at)
+        while (lmbClicks.length && lmbClicks[0] <= now - 1000) lmbClicks.shift();
+        while (rmbClicks.length && rmbClicks[0] <= now - 1000) rmbClicks.shift();
+
+        State.lmbCps = lmbClicks.length;
+        State.rmbCps = rmbClicks.length;
+
+        // CPS HUD güncellemesi
+        const lmbDisplay = document.getElementById('cps-lmb');
+        const rmbDisplay = document.getElementById('cps-rmb');
+        if (lmbDisplay) lmbDisplay.innerText = State.lmbCps;
+        if (rmbDisplay) rmbDisplay.innerText = State.rmbCps;
+
+        requestAnimationFrame(renderLoop);
+    }
+    requestAnimationFrame(renderLoop);
+
+    // ==========================================
+    // 3. ARAYÜZ (GUI & CPS HUD)
+    // ==========================================
+    function initUI() {
+        if (document.getElementById('opt-menu-container')) return;
+
+        const style = document.createElement('style');
+        style.innerHTML = `
+            #opt-menu-container {
+                position: fixed;
+                top: 50px;
+                right: 20px;
+                width: 310px;
+                background: rgba(13, 17, 23, 0.88);
+                backdrop-filter: blur(14px);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 14px;
+                color: #f0f6fc;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 16px rgba(124, 58, 237, 0.25);
+                z-index: 9999999;
+                user-select: none;
+                transition: opacity 0.2s, transform 0.2s;
+            }
+            #opt-menu-container.hidden {
+                opacity: 0;
+                transform: scale(0.95);
+                pointer-events: none;
+            }
+            .opt-header {
+                background: linear-gradient(135deg, rgba(124, 58, 237, 0.4), rgba(37, 99, 235, 0.2));
+                padding: 10px 14px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                cursor: move;
+            }
+            .opt-title {
+                font-size: 13px;
+                font-weight: 700;
+                background: linear-gradient(90deg, #a78bfa, #60a5fa);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            .opt-fps-badge {
+                background: rgba(16, 185, 129, 0.2);
+                color: #34d399;
+                border: 1px solid rgba(52, 211, 153, 0.3);
+                border-radius: 20px;
+                padding: 1px 7px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            .opt-body {
+                padding: 12px 14px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            .opt-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                font-size: 12.5px;
+                color: #c9d1d9;
+            }
+            .opt-switch {
+                position: relative;
+                display: inline-block;
+                width: 36px;
+                height: 18px;
+            }
+            .opt-switch input { opacity: 0; width: 0; height: 0; }
+            .opt-slider {
+                position: absolute; cursor: pointer;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background-color: #21262d;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                transition: .25s;
+                border-radius: 20px;
+            }
+            .opt-slider:before {
+                position: absolute; content: "";
+                height: 12px; width: 12px; left: 2px; bottom: 2px;
+                background-color: #8b949e;
+                transition: .25s;
+                border-radius: 50%;
+            }
+            input:checked + .opt-slider { background-color: #7c3aed; }
+            input:checked + .opt-slider:before {
+                transform: translateX(18px);
+                background-color: #ffffff;
+            }
+            .opt-range {
+                width: 100%;
+                height: 4px;
+                accent-color: #7c3aed;
+                cursor: pointer;
+            }
+            .opt-btn {
+                background: linear-gradient(135deg, #7c3aed, #4f46e5);
+                border: none;
+                color: white;
+                padding: 7px;
+                font-size: 11.5px;
+                font-weight: 600;
+                border-radius: 6px;
+                cursor: pointer;
+                box-shadow: 0 4px 10px rgba(124, 58, 237, 0.3);
+            }
+            .opt-footer {
+                padding: 6px 14px 10px;
+                font-size: 10px;
+                color: #8b949e;
+                text-align: center;
+            }
+            #opt-toggle-btn {
+                position: fixed;
+                bottom: 20px;
+                left: 20px;
+                width: 36px;
+                height: 36px;
+                border-radius: 10px;
+                background: rgba(13, 17, 23, 0.75);
+                backdrop-filter: blur(8px);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                z-index: 9999998;
+            }
+            /* Ekran Üstü CPS HUD Stili */
+            #opt-cps-hud {
+                position: fixed;
+                top: 15px;
+                left: 15px;
+                background: rgba(13, 17, 23, 0.85);
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+                padding: 6px 14px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                color: #fff;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                font-size: 12px;
+                font-weight: 600;
+                z-index: 9999990;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+                user-select: none;
+                transition: opacity 0.2s;
+            }
+            #opt-cps-hud.hidden {
+                display: none;
+            }
+            .cps-box {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .cps-num {
+                color: #a78bfa;
+                font-size: 13px;
+                min-width: 14px;
+                text-align: center;
+            }
+        `;
+        document.head.appendChild(style);
+
+        // CPS HUD Elementi
+        const cpsHud = document.createElement('div');
+        cpsHud.id = 'opt-cps-hud';
+        cpsHud.innerHTML = `
+            <div class="cps-box"><span>LMB:</span> <span class="cps-num" id="cps-lmb">0</span></div>
+            <span style="color: rgba(255,255,255,0.2);">|</span>
+            <div class="cps-box"><span>RMB:</span> <span class="cps-num" id="cps-rmb">0</span></div>
+        `;
+        document.body.appendChild(cpsHud);
+
+        // VIP Kontrol Menüsü
+        const menu = document.createElement('div');
+        menu.id = 'opt-menu-container';
+        menu.innerHTML = `
+            <div class="opt-header" id="opt-drag-header">
+                <div class="opt-title">⚡ BLOXD VIP ENGINE</div>
+                <div class="opt-fps-badge" id="opt-fps-display">-- FPS</div>
+            </div>
+            <div class="opt-body">
+                <div class="opt-row">
+                    <span>CPS Göstergesi (HUD)</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-cps" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div class="opt-row">
+                    <span>Pixelated Render (FPS Boost)</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-pixel" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div class="opt-row">
+                    <span>Pop-up & Reklam Temizliği</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-ads" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div class="opt-row">
+                        <span>Çözünürlük Çarpanı</span>
+                        <span id="scale-val" style="color: #a78bfa; font-size: 11px;">1.0x</span>
+                    </div>
+                    <input type="range" class="opt-range" id="scale-slider" min="0.5" max="1.0" step="0.1" value="1.0">
+                </div>
+                <button class="opt-btn" id="btn-force-clean">🧹 Belleği Temizle (GC)</button>
+            </div>
+            <div class="opt-footer">Aç/Kapat: <b>INSERT</b> veya <b>R-SHIFT</b></div>
+        `;
+        document.body.appendChild(menu);
+
+        // Hızlı Buton (Sol Altta)
+        const floatBtn = document.createElement('div');
+        floatBtn.id = 'opt-toggle-btn';
+        floatBtn.title = "Ayarları Aç / Kapat";
+        floatBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
+        document.body.appendChild(floatBtn);
+
+        // Etkileşimler & Event Dinleyicileri
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Insert' || e.code === 'ShiftRight') {
+                menu.classList.toggle('hidden');
+            }
+        });
+        floatBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
+
+        menu.addEventListener('keydown', (e) => e.stopPropagation());
+        menu.addEventListener('keyup', (e) => e.stopPropagation());
+
+        document.getElementById('toggle-cps').addEventListener('change', (e) => {
+            State.showCps = e.target.checked;
+            cpsHud.classList.toggle('hidden', !State.showCps);
+        });
+
+        document.getElementById('toggle-pixel').addEventListener('change', (e) => {
+            State.pixelated = e.target.checked;
+            applyCanvasOptimizations();
+        });
+
+        document.getElementById('toggle-ads').addEventListener('change', (e) => {
+            State.removeAds = e.target.checked;
+            if (State.removeAds) removeJunkElements();
+        });
+
+        const scaleSlider = document.getElementById('scale-slider');
+        const scaleVal = document.getElementById('scale-val');
+        scaleSlider.addEventListener('input', (e) => {
+            State.resScale = parseFloat(e.target.value);
+            scaleVal.innerText = `${State.resScale.toFixed(1)}x`;
+            applyCanvasOptimizations();
+        });
+
+        document.getElementById('btn-force-clean').addEventListener('click', () => {
+            removeJunkElements();
+            applyCanvasOptimizations();
+        });
+
+        // Menü Sürükleme Mantığı
+        const dragHeader = document.getElementById('opt-drag-header');
+        let isDragging = false, startX, startY, initialX, initialY;
+
+        dragHeader.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            const rect = menu.getBoundingClientRect();
+            initialX = rect.left;
+            initialY = rect.top;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            menu.style.left = `${initialX + (e.clientX - startX)}px`;
+            menu.style.top = `${initialY + (e.clientY - startY)}px`;
+            menu.style.right = 'auto';
+        });
+
+        window.addEventListener('mouseup', () => { isDragging = false; });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initUI);
+    } else {
+        initUI();
+    }
+})();
