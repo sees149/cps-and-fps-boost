@@ -1,0 +1,804 @@
+// ==UserScript==
+// @name         Bloxd.io VIP Engine - 100% Fully Automatic
+// @namespace    http://tampermonkey.net/
+// @version      13.0
+// @description  Tamamen otomatik can takibi, fiziksel renkli bar okuyucu, otomatik 60 HP uyarısı ve 3 sekmeli VIP panel.
+// @author       Optimizer Pro
+// @match        *://bloxd.io/*
+// @run-at       document-start
+// @noframes
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.top !== window.self) return;
+    if (window.__bloxdVipCleanup) window.__bloxdVipCleanup();
+
+    try {
+        window.open = function () { return null; };
+        Object.freeze(window.open);
+    } catch (e) {}
+
+    window.addEventListener('click', function (e) {
+        let target = e.target;
+        while (target && target.tagName !== 'A') target = target.parentElement;
+        if (target && target.tagName === 'A' && target.target === '_blank') {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+
+    // ==========================================
+    // 1. GENEL STATE VE AYARLAR
+    // ==========================================
+    const savedMsg = localStorage.getItem('bloxd_vip_chat_msg') || "gg wp!";
+    const savedKey = localStorage.getItem('bloxd_vip_chat_key') || "KeyV";
+    const savedKeyName = localStorage.getItem('bloxd_vip_chat_key_name') || "V";
+
+    const defaultPlaylist = [
+        { title: "☕ Lofi Girl - Canlı Hip Hop Beats", url: "https://www.youtube.com/watch?v=jfKfPfyJRdk" },
+        { title: "🌌 Synthwave Chill - Canlı Radyo", url: "https://www.youtube.com/watch?v=4xDzrJKXOOY" },
+        { title: "🔥 TheFatRat - Unity (Gaming)", url: "https://www.youtube.com/watch?v=n8X9_GayFlA" },
+        { title: "⚡ Alan Walker - Fade (NCS)", url: "https://www.youtube.com/watch?v=bM7SZ5SBzyY" },
+        { title: "🎧 C418 - Wet Hands (Lofi Remix)", url: "https://www.youtube.com/watch?v=HkL8-zG34kM" }
+    ];
+
+    let playlist = JSON.parse(localStorage.getItem('bloxd_vip_playlist')) || defaultPlaylist;
+
+    const State = {
+        silenceLogs: true,
+        pixelated: true,
+        removeAds: true,
+        showCps: true,
+        autoChatEnabled: true,
+        autoSpamRunning: false,
+        autoChatMessage: savedMsg,
+        autoChatKey: savedKey,
+        autoChatKeyName: savedKeyName,
+        antiMute: true,
+        spamIntervalMs: 2200,
+        showTimer: true,
+        timerColor: '#a78bfa',
+        timerSize: 18,
+        showKeystrokes: true,
+        lowHpWarning: true,
+        lowHpThreshold: 60,
+        currentHp: 100,
+        smartAfk: true,
+        resScale: 1.0,
+        fps: 0,
+        lmbCps: 0,
+        rmbCps: 0
+    };
+
+    let isBindingKey = false;
+    console.log = () => {}; console.warn = () => {}; console.error = () => {};
+
+    // ==========================================
+    // 2. OTOMATİK FİZİKSEL CAN (HP) MOTORU
+    // ==========================================
+    function detectRealHealth() {
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+
+        const isMenu = (el) => {
+            return !el || el.closest('#opt-menu-container') ||
+                   el.closest('#opt-cps-hud') ||
+                   el.closest('#opt-keystrokes-hud') ||
+                   el.closest('#opt-timer-hud') ||
+                   el.closest('#opt-hp-banner') ||
+                   el.closest('#opt-hp-vignette');
+        };
+
+        // YÖNTEM A: DİNAMİK METİN TESPİTİ (Örn: "75/100" veya "75 HP")
+        const allText = document.querySelectorAll('div, span, p');
+        for (let i = 0; i < allText.length; i++) {
+            const el = allText[i];
+            if (isMenu(el)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.top > H * 0.55 && rect.bottom <= H) {
+                const txt = el.textContent ? el.textContent.trim() : '';
+                const slashM = txt.match(/^([1-9]\d?|100)\s*\/\s*100$/);
+                if (slashM) {
+                    const hp = parseInt(slashM[1], 10);
+                    if (hp > 0 && hp <= 100) return hp;
+                }
+                const hpM = txt.match(/^([1-9]\d?|100)\s*hp$/i);
+                if (hpM) {
+                    const hp = parseInt(hpM[1], 10);
+                    if (hp > 0 && hp <= 100) return hp;
+                }
+            }
+        }
+
+        // YÖNTEM B: FİZİKSEL RENKLİ CAN BARI (KIRMIZI / YEŞİL / TURUNCU PİKSEL ORANI)
+        // Bloxd.io'da can barı ekranın altındadır ve hasar aldıkça fiziksel pikseli küçülür!
+        const allDivs = document.querySelectorAll('div');
+        for (let i = 0; i < allDivs.length; i++) {
+            const el = allDivs[i];
+            if (isMenu(el)) continue;
+
+            const rect = el.getBoundingClientRect();
+            // Ekranın alt %40'ında, ortalanmış bir çubuk mu?
+            if (rect.top > H * 0.60 && rect.bottom <= H && rect.left > W * 0.08 && rect.right < W * 0.92) {
+                if (rect.height >= 3 && rect.height <= 36 && rect.width > 2) {
+                    const style = window.getComputedStyle(el);
+                    const bg = style.backgroundColor || '';
+                    const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                    if (m) {
+                        const r = parseInt(m[1], 10);
+                        const g = parseInt(m[2], 10);
+                        const b = parseInt(m[3], 10);
+
+                        // Kırmızı (Hasarlı Can), Yeşil (Dolu Can) veya Turuncu
+                        const isRed = (r > 155 && g < 115 && b < 115);
+                        const isGreen = (g > 135 && r < 135);
+                        const isOrange = (r > 175 && g > 85 && g < 185 && b < 85);
+
+                        if (isRed || isGreen || isOrange) {
+                            // 1. Inline Style Genişliği (%...)
+                            const wStr = el.style.width || '';
+                            if (wStr.includes('%')) {
+                                const val = Math.round(parseFloat(wStr));
+                                if (val > 0 && val <= 100) return val;
+                            }
+
+                            // 2. Transform ScaleX
+                            const transform = el.style.transform || '';
+                            const scaleM = transform.match(/scaleX\(([\d.]+)\)/i);
+                            if (scaleM) {
+                                const s = parseFloat(scaleM[1]);
+                                if (s > 0 && s <= 1) return Math.round(s * 100);
+                            }
+
+                            // 3. Ebeveyn Kutusuna Göre Gerçek Piksel Oranı (En Kesin Yöntem!)
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const parentRect = parent.getBoundingClientRect();
+                                if (parentRect.width >= 40 && parentRect.width <= 500) {
+                                    const ratio = Math.round((rect.width / parentRect.width) * 100);
+                                    if (ratio > 0 && ratio <= 100) return ratio;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function playWarningBeep() {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(750, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.25);
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.26);
+        } catch(e) {}
+    }
+
+    let wasLowHp = false;
+
+    // TAMAMEN OTOMATİK CAN VE UYARI DÖNGÜSÜ (100ms HIZINDA)
+    function autoHealthLoop() {
+        const hp = detectRealHealth();
+
+        if (hp !== null) {
+            State.currentHp = hp;
+            const liveHpEl = document.getElementById('live-hp-display');
+            if (liveHpEl) {
+                liveHpEl.innerText = `${hp} HP`;
+                liveHpEl.style.color = hp <= 60 ? "#f87171" : "#34d399";
+            }
+        }
+
+        if (!State.lowHpWarning) {
+            hideHpWarning();
+            return;
+        }
+
+        // CAN 60 VE ALTINA DÜŞTÜĞÜ SALİSE UYAR
+        if (State.currentHp !== null && State.currentHp <= State.lowHpThreshold && State.currentHp > 0) {
+            showHpWarning(State.currentHp);
+            if (!wasLowHp) {
+                playWarningBeep();
+                wasLowHp = true;
+            }
+        } else {
+            hideHpWarning();
+            wasLowHp = false;
+        }
+    }
+
+    function showHpWarning(currentHp) {
+        let vignette = document.getElementById('opt-hp-vignette');
+        let banner = document.getElementById('opt-hp-banner');
+        if (vignette) vignette.style.display = 'block';
+        if (banner) {
+            banner.style.display = 'block';
+            banner.innerHTML = `⚠️ DİKKAT: CANINIZ DÜŞTÜ! (${currentHp} HP) ⚠️`;
+        }
+    }
+
+    function hideHpWarning() {
+        let vignette = document.getElementById('opt-hp-vignette');
+        let banner = document.getElementById('opt-hp-banner');
+        if (vignette) vignette.style.display = 'none';
+        if (banner) banner.style.display = 'none';
+    }
+    const hpInterval = setInterval(autoHealthLoop, 100);
+
+    // ==========================================
+    // 3. OTO-SPAM & OTOMATİK ENTER
+    // ==========================================
+    let antiMuteCycle = 0;
+    let autoSpamTimer = null;
+
+    function findBloxdChatInput() {
+        return document.querySelector('.ChatInput') ||
+               document.querySelector('input.ChatInput') ||
+               document.querySelector('input[class*="Chat"]') ||
+               document.querySelector('#chatInput') ||
+               document.querySelector('.chat-input') ||
+               document.querySelector('textarea.ChatInput') ||
+               document.querySelector('input:not([id^="opt-"]):not([type="checkbox"]):not([type="range"])');
+    }
+
+    function sendSingleChatMessage() {
+        if (!State.autoChatEnabled) return;
+        const inputField = document.getElementById('input-autochat-msg');
+        const rawText = inputField ? inputField.value : State.autoChatMessage;
+        if (!rawText) return;
+
+        let textToSend = rawText;
+        if (State.antiMute) {
+            antiMuteCycle = (antiMuteCycle % 10) + 1;
+            textToSend = `${rawText} ${'.'.repeat(antiMuteCycle)}`;
+        }
+
+        function triggerSubmit(inputEl) {
+            inputEl.focus();
+            const proto = inputEl instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            if (nativeSetter) nativeSetter.call(inputEl, textToSend);
+            else inputEl.value = textToSend;
+
+            inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+            setTimeout(() => {
+                function makeEnter(type) {
+                    const ev = new KeyboardEvent(type, {
+                        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                        bubbles: true, cancelable: true, composed: true, view: window
+                    });
+                    Object.defineProperty(ev, 'keyCode', { get: () => 13 });
+                    Object.defineProperty(ev, 'which', { get: () => 13 });
+                    return ev;
+                }
+
+                inputEl.dispatchEvent(makeEnter('keydown'));
+                inputEl.dispatchEvent(makeEnter('keypress'));
+                inputEl.dispatchEvent(makeEnter('keyup'));
+
+                if (inputEl.form) {
+                    try { inputEl.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); } catch(e) {}
+                }
+                document.dispatchEvent(makeEnter('keydown'));
+
+                setTimeout(() => {
+                    const canvas = document.querySelector('canvas');
+                    if (canvas && document.activeElement === inputEl) {
+                        inputEl.blur();
+                        canvas.focus();
+                    }
+                }, 80);
+            }, 50);
+        }
+
+        let chatInput = findBloxdChatInput();
+        if (chatInput) {
+            triggerSubmit(chatInput);
+        } else {
+            const canvas = document.querySelector('canvas') || document.body;
+            const openEv = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+            Object.defineProperty(openEv, 'keyCode', { get: () => 13 });
+            Object.defineProperty(openEv, 'which', { get: () => 13 });
+            canvas.dispatchEvent(openEv);
+
+            setTimeout(() => {
+                chatInput = findBloxdChatInput();
+                if (chatInput) triggerSubmit(chatInput);
+            }, 70);
+        }
+    }
+
+    function toggleAutoSpamEngine() {
+        if (!State.autoChatEnabled) return alert("Önce Oto-Yazma anahtarını açın!");
+        if (State.autoSpamRunning) stopAutoSpamEngine();
+        else startAutoSpamEngine();
+    }
+
+    function startAutoSpamEngine() {
+        State.autoSpamRunning = true;
+        sendSingleChatMessage();
+
+        if (autoSpamTimer) clearInterval(autoSpamTimer);
+        autoSpamTimer = setInterval(() => {
+            if (!State.autoSpamRunning || !State.autoChatEnabled) {
+                stopAutoSpamEngine();
+                return;
+            }
+            sendSingleChatMessage();
+        }, State.spamIntervalMs);
+
+        updateSpamUIState();
+    }
+
+    function stopAutoSpamEngine() {
+        State.autoSpamRunning = false;
+        if (autoSpamTimer) {
+            clearInterval(autoSpamTimer);
+            autoSpamTimer = null;
+        }
+        updateSpamUIState();
+    }
+
+    function updateSpamUIState() {
+        const btn = document.getElementById('btn-toggle-spam-loop');
+        const badge = document.getElementById('spam-status-badge');
+        if (!btn || !badge) return;
+
+        if (State.autoSpamRunning) {
+            btn.innerText = `⏹ Oto-Spamı Durdur (${State.autoChatKeyName})`;
+            btn.style.background = "linear-gradient(135deg, #ef4444, #dc2626)";
+            badge.innerText = `🟢 ÇALIŞIYOR (${State.autoChatKeyName} ile durdur)`;
+            badge.style.color = "#34d399";
+        } else {
+            btn.innerText = `▶ Oto-Spamı Başlat (${State.autoChatKeyName})`;
+            btn.style.background = "linear-gradient(135deg, #10b981, #059669)";
+            badge.innerText = "🔴 DURDURULDU";
+            badge.style.color = "#f87171";
+        }
+    }
+
+    // ==========================================
+    // 4. TUŞ DİNLİYİCİSİ
+    // ==========================================
+    const keysPressed = { KeyW: false, KeyA: false, KeyS: false, KeyD: false, Space: false, LMB: false, RMB: false };
+
+    function updateKeystrokesUI() {
+        if (!State.showKeystrokes) return;
+        const mapping = { KeyW: 'ks-key-w', KeyA: 'ks-key-a', KeyS: 'ks-key-s', KeyD: 'ks-key-d', Space: 'ks-key-space', LMB: 'ks-key-lmb', RMB: 'ks-key-rmb' };
+        for (const [code, id] of Object.entries(mapping)) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('active', keysPressed[code]);
+        }
+    }
+
+    const globalKeydownHandler = (e) => {
+        if (isBindingKey) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            State.autoChatKey = e.code;
+            State.autoChatKeyName = e.key.length === 1 ? e.key.toUpperCase() : e.code.replace('Key', '').replace('Digit', '');
+
+            localStorage.setItem('bloxd_vip_chat_key', State.autoChatKey);
+            localStorage.setItem('bloxd_vip_chat_key_name', State.autoChatKeyName);
+
+            isBindingKey = false;
+            const btnBind = document.getElementById('btn-bind-key');
+            if (btnBind) {
+                btnBind.innerText = `⌨️ Tuş: ${State.autoChatKeyName} (Değiştirmek İçin Tıkla)`;
+                btnBind.style.borderColor = '#10b981';
+                btnBind.style.color = '#fff';
+            }
+            updateSpamUIState();
+            return;
+        }
+
+        if (e.code in keysPressed) {
+            keysPressed[e.code] = true;
+            updateKeystrokesUI();
+        }
+
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+        const targetCode = String(State.autoChatKey).toUpperCase();
+        const targetName = String(State.autoChatKeyName).toUpperCase();
+        const currentCode = String(e.code || '').toUpperCase();
+        const currentKey = String(e.key || '').toUpperCase();
+
+        if (currentCode === targetCode || currentKey === targetName) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleAutoSpamEngine();
+        }
+    };
+    window.addEventListener('keydown', globalKeydownHandler, true);
+
+    window.addEventListener('keyup', (e) => {
+        if (e.code in keysPressed) {
+            keysPressed[e.code] = false;
+            updateKeystrokesUI();
+        }
+    }, true);
+
+    window.addEventListener('mousedown', (e) => {
+        if (e.target.closest('#opt-menu-container') || e.target.closest('#opt-toggle-btn')) return;
+        const now = performance.now();
+        if (e.button === 0) { keysPressed.LMB = true; lmbClicks.push(now); }
+        if (e.button === 2) { keysPressed.RMB = true; rmbClicks.push(now); }
+        updateKeystrokesUI();
+    }, true);
+
+    window.addEventListener('mouseup', (e) => {
+        if (e.button === 0) keysPressed.LMB = false;
+        if (e.button === 2) keysPressed.RMB = false;
+        updateKeystrokesUI();
+    }, true);
+
+    // ==========================================
+    // 5. FPS & CPS DÖNGÜSÜ
+    // ==========================================
+    const lmbClicks = [];
+    const rmbClicks = [];
+    let lastFpsTime = performance.now(), frameCount = 0;
+
+    function mainLoop() {
+        const now = performance.now();
+        frameCount++;
+        if (now - lastFpsTime >= 1000) {
+            State.fps = frameCount;
+            frameCount = 0;
+            lastFpsTime = now;
+            const fpsEl = document.getElementById('opt-fps-display');
+            if (fpsEl) fpsEl.innerText = `${State.fps} FPS`;
+        }
+
+        while (lmbClicks.length && lmbClicks[0] <= now - 1000) lmbClicks.shift();
+        while (rmbClicks.length && rmbClicks[0] <= now - 1000) rmbClicks.shift();
+        State.lmbCps = lmbClicks.length;
+        State.rmbCps = rmbClicks.length;
+
+        const lmbDisplay = document.getElementById('cps-lmb');
+        const rmbDisplay = document.getElementById('cps-rmb');
+        if (lmbDisplay) lmbDisplay.innerText = State.lmbCps;
+        if (rmbDisplay) rmbDisplay.innerText = State.rmbCps;
+
+        requestAnimationFrame(mainLoop);
+    }
+    requestAnimationFrame(mainLoop);
+
+    // ==========================================
+    // 6. YOUTUBE OYNATICI
+    // ==========================================
+    function extractYouTubeId(url) {
+        if (!url) return null;
+        const match = url.trim().match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|watch\?v=|watch\?.+&v=))([\w-]{11})/i) || url.match(/^([\w-]{11})$/);
+        return match ? match[1] : null;
+    }
+
+    function playYouTubeTrack(url, title) {
+        const ytId = extractYouTubeId(url);
+        const container = document.getElementById('vip-yt-container');
+        const trackDisplay = document.getElementById('audio-track-display');
+        if (!ytId) return alert("Geçersiz link!");
+
+        if (container) {
+            container.innerHTML = `
+                <iframe id="vip-yt-frame" src="https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&enablejsapi=1&playsinline=1" 
+                style="width: 100%; height: 160px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); margin-top: 6px;" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+            `;
+            if (trackDisplay) trackDisplay.innerHTML = `▶ Çalıyor: <span style="color:#34d399;">${title || 'Müzik'}</span>`;
+        }
+    }
+
+    // ==========================================
+    // 7. ARAYÜZ (GUI)
+    // ==========================================
+    function initUI() {
+        if (document.getElementById('opt-menu-container')) return;
+
+        const style = document.createElement('style');
+        style.innerHTML = `
+            #opt-menu-container {
+                position: fixed; top: 45px; right: 20px; width: 350px;
+                background: rgba(13, 17, 23, 0.95); backdrop-filter: blur(14px);
+                border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px;
+                color: #f0f6fc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                box-shadow: 0 16px 36px rgba(0,0,0,0.6), 0 0 20px rgba(124, 58, 237, 0.25);
+                z-index: 9999999; user-select: none; transition: opacity 0.2s, transform 0.2s;
+                max-height: 90vh; overflow-y: auto;
+            }
+            #opt-menu-container.hidden { opacity: 0; transform: scale(0.95); pointer-events: none; }
+            .opt-header {
+                background: linear-gradient(135deg, rgba(124, 58, 237, 0.45), rgba(37, 99, 235, 0.25));
+                padding: 10px 14px; display: flex; align-items: center; justify-content: space-between;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08); cursor: move;
+            }
+            .opt-title { font-size: 13px; font-weight: 700; background: linear-gradient(90deg, #a78bfa, #60a5fa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .opt-fps-badge { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.3); border-radius: 20px; padding: 1px 7px; font-size: 11px; font-weight: 600; }
+            
+            .opt-tabs { display: flex; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(22, 27, 34, 0.6); }
+            .opt-tab-btn { flex: 1; padding: 8px 6px; font-size: 11px; font-weight: 600; text-align: center; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
+            .opt-tab-btn.active { color: #fff; border-bottom: 2px solid #a78bfa; background: rgba(124, 58, 237, 0.15); }
+
+            .opt-page { padding: 12px 14px; display: flex; flex-direction: column; gap: 11px; }
+            .opt-page.hidden { display: none; }
+            .opt-section-title { font-size: 11px; font-weight: 700; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 4px; }
+            .opt-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #c9d1d9; }
+            
+            .opt-switch { position: relative; display: inline-block; width: 36px; height: 18px; }
+            .opt-switch input { opacity: 0; width: 0; height: 0; }
+            .opt-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #21262d; border: 1px solid rgba(255,255,255,0.15); transition: .25s; border-radius: 20px; }
+            .opt-slider:before { position: absolute; content: ""; height: 12px; width: 12px; left: 2px; bottom: 2px; background-color: #8b949e; transition: .25s; border-radius: 50%; }
+            input:checked + .opt-slider { background-color: #7c3aed; }
+            input:checked + .opt-slider:before { transform: translateX(18px); background-color: #ffffff; }
+
+            .opt-input { background: #161b22; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; color: #fff; padding: 6px 10px; font-size: 11.5px; outline: none; width: 100%; box-sizing: border-box; }
+            .opt-input:focus { border-color: #a78bfa; }
+            .opt-btn { background: linear-gradient(135deg, #7c3aed, #4f46e5); border: none; color: white; padding: 7px 10px; font-size: 11px; font-weight: 600; border-radius: 6px; cursor: pointer; text-align: center; }
+            .opt-btn:hover { filter: brightness(1.15); }
+
+            #btn-bind-key {
+                background: #161b22; border: 1px solid #7c3aed; color: #a78bfa;
+                padding: 7px 10px; font-size: 11.5px; font-weight: 700; border-radius: 6px;
+                cursor: pointer; width: 100%; transition: all 0.2s; text-align: center;
+            }
+
+            #opt-hp-vignette { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999990; box-shadow: inset 0 0 90px rgba(239, 68, 68, 0.9), inset 0 0 170px rgba(220, 38, 38, 0.6); display: none; animation: hpPulse 0.9s infinite ease-in-out; }
+            @keyframes hpPulse { 0% { opacity: 0.4; } 50% { opacity: 0.95; } 100% { opacity: 0.4; } }
+            #opt-hp-banner { position: fixed; top: 12%; left: 50%; transform: translateX(-50%); background: rgba(185, 28, 28, 0.92); backdrop-filter: blur(8px); border: 2px solid #f87171; border-radius: 12px; padding: 8px 22px; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 800; letter-spacing: 0.5px; z-index: 999995; box-shadow: 0 0 25px rgba(239, 68, 68, 0.7); display: none; pointer-events: none; }
+
+            #opt-cps-hud { position: fixed; top: 15px; left: 20px; background: rgba(13, 17, 23, 0.85); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px; padding: 6px 14px; display: flex; gap: 10px; font-size: 12px; font-weight: 600; color: #fff; z-index: 9999991; }
+            #opt-cps-hud.hidden { display: none; }
+            #opt-toggle-btn { position: fixed; bottom: 20px; left: 20px; width: 36px; height: 36px; border-radius: 10px; background: rgba(13, 17, 23, 0.75); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.12); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 9999998; }
+
+            #opt-keystrokes-hud { position: fixed; bottom: 80px; left: 20px; background: rgba(13, 17, 23, 0.80); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 5px; align-items: center; z-index: 9999992; cursor: move; }
+            #opt-keystrokes-hud.hidden { display: none; }
+            .ks-row { display: flex; gap: 5px; }
+            .ks-key { width: 38px; height: 38px; background: rgba(22, 27, 34, 0.85); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #8b949e; font-weight: 700; font-size: 13px; }
+            .ks-key.space { width: 124px; height: 26px; font-size: 10px; }
+            .ks-key.mouse { width: 60px; height: 28px; font-size: 11px; }
+            .ks-key.active { background: #7c3aed; color: #fff; border-color: #a78bfa; box-shadow: 0 0 12px rgba(124, 58, 237, 0.7); }
+
+            .playlist-container { display: flex; flex-direction: column; gap: 6px; max-height: 190px; overflow-y: auto; }
+            .playlist-item { background: rgba(22, 27, 34, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+            .playlist-title { font-size: 11.5px; color: #f0f6fc; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+            .track-info { font-size: 11px; color: #a78bfa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 6px; font-weight: 600; }
+        `;
+        document.head.appendChild(style);
+
+        const hpVignette = document.createElement('div'); hpVignette.id = 'opt-hp-vignette'; document.body.appendChild(hpVignette);
+        const hpBanner = document.createElement('div'); hpBanner.id = 'opt-hp-banner'; document.body.appendChild(hpBanner);
+        const cpsHud = document.createElement('div'); cpsHud.id = 'opt-cps-hud'; cpsHud.innerHTML = `<div>LMB: <span id="cps-lmb" style="color:#a78bfa;">0</span></div><span style="opacity:0.2;">|</span><div>RMB: <span id="cps-rmb" style="color:#a78bfa;">0</span></div>`; document.body.appendChild(cpsHud);
+
+        const keystrokesHud = document.createElement('div');
+        keystrokesHud.id = 'opt-keystrokes-hud';
+        keystrokesHud.innerHTML = `
+            <div class="ks-row"><div class="ks-key" id="ks-key-w">W</div></div>
+            <div class="ks-row"><div class="ks-key" id="ks-key-a">A</div><div class="ks-key" id="ks-key-s">S</div><div class="ks-key" id="ks-key-d">D</div></div>
+            <div class="ks-row"><div class="ks-key mouse" id="ks-key-lmb">LMB</div><div class="ks-key mouse" id="ks-key-rmb">RMB</div></div>
+            <div class="ks-row"><div class="ks-key space" id="ks-key-space">SPACE</div></div>
+        `;
+        document.body.appendChild(keystrokesHud);
+
+        const menu = document.createElement('div');
+        menu.id = 'opt-menu-container';
+        menu.innerHTML = `
+            <div class="opt-header" id="opt-drag-header">
+                <div class="opt-title">⚡ BLOXD VIP ENGINE PRO</div>
+                <div class="opt-fps-badge" id="opt-fps-display">-- FPS</div>
+            </div>
+
+            <div class="opt-tabs">
+                <div class="opt-tab-btn active" id="tab-btn-settings">⚙️ Ayarlar & Chat</div>
+                <div class="opt-tab-btn" id="tab-btn-music">🎵 YouTube</div>
+                <div class="opt-tab-btn" id="tab-btn-parkour">🏃 Tuşlar</div>
+            </div>
+
+            <div class="opt-page" id="page-settings">
+                <div class="opt-section-title">🩸 Otomatik Can Takip Motoru</div>
+                
+                <div class="opt-row" style="background: rgba(0,0,0,0.4); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                    <span>🎮 Canlı Can (Otomatik):</span>
+                    <span id="live-hp-display" style="font-weight: 800; font-size: 13px; color: #34d399;">100 HP</span>
+                </div>
+
+                <div class="opt-row">
+                    <span>Düşük Can Uyarısı (< 60 HP)</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-lowhp" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+
+                <div class="opt-section-title">💬 Oto-Spam & Chat Botu</div>
+                <div class="opt-row">
+                    <span>Oto-Yazma Anahtarı</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-autochat" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div class="opt-row">
+                    <span>Spam Durumu:</span>
+                    <span id="spam-status-badge" style="color: #f87171; font-weight:700;">🔴 DURDURULDU</span>
+                </div>
+                <button class="opt-btn" id="btn-toggle-spam-loop" style="background: linear-gradient(135deg, #10b981, #059669); font-weight:700;">▶ Oto-Spamı Başlat (${State.autoChatKeyName})</button>
+
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <span style="font-size: 11px; color: #8b949e;">Mesajınız:</span>
+                    <input type="text" class="opt-input" id="input-autochat-msg" value="${State.autoChatMessage}">
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <span style="font-size: 11px; color: #8b949e;">Açma/Kapatma Tuşu:</span>
+                    <button id="btn-bind-key">⌨️ Tuş: ${State.autoChatKeyName} (Değiştirmek İçin Tıkla)</button>
+                </div>
+            </div>
+
+            <div class="opt-page hidden" id="page-music">
+                <div class="track-info" id="audio-track-display">Şu An: Çalan Şarkı Yok</div>
+                <div id="vip-yt-container"></div>
+                <div class="playlist-container" id="playlist-list"></div>
+                <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 5px;">
+                    <input type="text" class="opt-input" id="new-song-title" placeholder="Şarkı Adı">
+                    <input type="text" class="opt-input" id="new-song-url" placeholder="YouTube Linki">
+                    <button class="opt-btn" id="btn-add-song">+ Listeye Ekle</button>
+                </div>
+            </div>
+
+            <div class="opt-page hidden" id="page-parkour">
+                <div class="opt-section-title">⌨️ Keystrokes (Tuş Takip)</div>
+                <div class="opt-row">
+                    <span>Keystrokes HUD'ı Göster</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-keystrokes" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(menu);
+
+        const floatBtn = document.createElement('div');
+        floatBtn.id = 'opt-toggle-btn';
+        floatBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
+        document.body.appendChild(floatBtn);
+
+        // ==========================================
+        // 8. ETKİLEŞİMLER
+        // ==========================================
+        const btnBind = document.getElementById('btn-bind-key');
+        btnBind.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (document.exitPointerLock) document.exitPointerLock();
+            isBindingKey = true;
+            btnBind.innerText = "⌛ Klavyeden Bir Tuşa Basın...";
+            btnBind.style.borderColor = "#f59e0b";
+            btnBind.style.color = "#f59e0b";
+        });
+
+        document.getElementById('btn-toggle-spam-loop').addEventListener('click', toggleAutoSpamEngine);
+
+        const tabBtnSettings = document.getElementById('tab-btn-settings');
+        const tabBtnMusic = document.getElementById('tab-btn-music');
+        const tabBtnParkour = document.getElementById('tab-btn-parkour');
+        const pageSettings = document.getElementById('page-settings');
+        const pageMusic = document.getElementById('page-music');
+        const pageParkour = document.getElementById('page-parkour');
+
+        function switchTab(activeBtn, activePage) {
+            [tabBtnSettings, tabBtnMusic, tabBtnParkour].forEach(b => b.classList.remove('active'));
+            [pageSettings, pageMusic, pageParkour].forEach(p => p.classList.add('hidden'));
+            activeBtn.classList.add('active');
+            activePage.classList.remove('hidden');
+        }
+
+        tabBtnSettings.addEventListener('click', () => switchTab(tabBtnSettings, pageSettings));
+        tabBtnMusic.addEventListener('click', () => switchTab(tabBtnMusic, pageMusic));
+        tabBtnParkour.addEventListener('click', () => switchTab(tabBtnParkour, pageParkour));
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Insert' || e.code === 'ShiftRight') menu.classList.toggle('hidden');
+        });
+        floatBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
+
+        menu.addEventListener('keydown', (e) => e.stopPropagation());
+        menu.addEventListener('keyup', (e) => e.stopPropagation());
+
+        const inputs = menu.querySelectorAll('input[type="text"]');
+        inputs.forEach(inp => {
+            inp.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (document.exitPointerLock) document.exitPointerLock();
+                inp.focus();
+            });
+        });
+
+        document.getElementById('toggle-keystrokes').addEventListener('change', (e) => {
+            State.showKeystrokes = e.target.checked;
+            keystrokesHud.classList.toggle('hidden', !State.showKeystrokes);
+        });
+
+        document.getElementById('toggle-lowhp').addEventListener('change', (e) => {
+            State.lowHpWarning = e.target.checked;
+        });
+
+        document.getElementById('toggle-autochat').addEventListener('change', (e) => {
+            State.autoChatEnabled = e.target.checked;
+            if (!State.autoChatEnabled) stopAutoSpamEngine();
+        });
+
+        const chatInputBox = document.getElementById('input-autochat-msg');
+        chatInputBox.addEventListener('input', (e) => {
+            State.autoChatMessage = e.target.value;
+            localStorage.setItem('bloxd_vip_chat_msg', e.target.value);
+        });
+
+        // Çalma Listesi
+        const playlistContainer = document.getElementById('playlist-list');
+        function renderPlaylist() {
+            playlistContainer.innerHTML = '';
+            playlist.forEach((item, index) => {
+                const row = document.createElement('div');
+                row.className = 'playlist-item';
+                row.innerHTML = `<div class="playlist-title">🎵 ${item.title}</div><span style="color:#34d399; font-weight:bold;">▶</span>`;
+                row.addEventListener('click', () => playYouTubeTrack(item.url, item.title));
+                playlistContainer.appendChild(row);
+            });
+        }
+        renderPlaylist();
+
+        document.getElementById('btn-add-song').addEventListener('click', () => {
+            const title = document.getElementById('new-song-title').value.trim();
+            const url = document.getElementById('new-song-url').value.trim();
+            if (!title || !url) return alert("Eksik bilgi!");
+            playlist.push({ title, url });
+            localStorage.setItem('bloxd_vip_playlist', JSON.stringify(playlist));
+            renderPlaylist();
+            playYouTubeTrack(url, title);
+        });
+
+        // Sürükleme
+        function makeDraggable(headerEl, targetEl) {
+            let isDragging = false, startX, startY, initX, initY;
+            headerEl.addEventListener('mousedown', (e) => {
+                if (e.target.tagName === 'BUTTON') return;
+                isDragging = true;
+                startX = e.clientX; startY = e.clientY;
+                const rect = targetEl.getBoundingClientRect();
+                initX = rect.left; initY = rect.top;
+            });
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                targetEl.style.left = `${initX + (e.clientX - startX)}px`;
+                targetEl.style.top = `${initY + (e.clientY - startY)}px`;
+                targetEl.style.right = 'auto';
+            });
+            window.addEventListener('mouseup', () => { isDragging = false; });
+        }
+        makeDraggable(document.getElementById('opt-drag-header'), menu);
+        makeDraggable(keystrokesHud, keystrokesHud);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initUI);
+    } else {
+        initUI();
+    }
+})();
