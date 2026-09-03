@@ -1,0 +1,1083 @@
+// ==UserScript==
+// @name         Bloxd.io VIP Engine - Ultimate FPS & Feature Edition
+// @namespace    http://tampermonkey.net/
+// @version      15.0
+// @description  Maksimum FPS Boost, Çözünürlük Çarpanı, 100+ HP Set Desteği, YouTube, Oto-Spam ve Parkur.
+// @author       Optimizer Pro
+// @match        *://bloxd.io/*
+// @run-at       document-start
+// @noframes
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ==========================================
+    // 0. ESKİ DİNLİYİCİLERİ VE KODLARI TEMİZLE
+    // ==========================================
+    if (window.top !== window.self) return;
+    if (window.__bloxdVipCleanup) window.__bloxdVipCleanup();
+
+    // 1. LOG SPAMİNİ SUSTUR (FPS Droplarını ve donmaları engeller)
+    console.log = () => {};
+    console.warn = () => {};
+    console.error = () => {};
+    console.info = () => {};
+
+    // 2. SES MOTORUNDAKİ GECİKMEYİ VE TIKANMAYI SIFIRLA
+    try {
+        const origAudioContext = window.AudioContext || window.webkitAudioContext;
+        if (origAudioContext) {
+            window.AudioContext = function () {
+                const ctx = new origAudioContext({ latencyHint: 'interactive' });
+                if (ctx.state === 'suspended') ctx.resume();
+                return ctx;
+            };
+        }
+    } catch (e) {}
+
+    // Pop-up ve İframe Kilidi
+    try {
+        window.open = function () { return null; };
+        Object.freeze(window.open);
+    } catch (e) {}
+
+    window.addEventListener('click', function (e) {
+        let target = e.target;
+        while (target && target.tagName !== 'A') target = target.parentElement;
+        if (target && target.tagName === 'A' && target.target === '_blank') {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+
+    // ==========================================
+    // 1. GENEL STATE VE AYARLAR
+    // ==========================================
+    const savedMsg = localStorage.getItem('bloxd_vip_chat_msg') || "gg wp!";
+    const savedKey = localStorage.getItem('bloxd_vip_chat_key') || "KeyV";
+    const savedKeyName = localStorage.getItem('bloxd_vip_chat_key_name') || "V";
+
+    const defaultPlaylist = [
+        { title: "☕ Lofi Girl - Canlı Hip Hop Beats", url: "https://www.youtube.com/watch?v=jfKfPfyJRdk" },
+        { title: "🌌 Synthwave Chill - Canlı Radyo", url: "https://www.youtube.com/watch?v=4xDzrJKXOOY" },
+        { title: "🔥 TheFatRat - Unity (Gaming)", url: "https://www.youtube.com/watch?v=n8X9_GayFlA" },
+        { title: "⚡ Alan Walker - Fade (NCS)", url: "https://www.youtube.com/watch?v=bM7SZ5SBzyY" },
+        { title: "🎧 C418 - Wet Hands (Lofi Remix)", url: "https://www.youtube.com/watch?v=HkL8-zG34kM" }
+    ];
+
+    let playlist = JSON.parse(localStorage.getItem('bloxd_vip_playlist')) || defaultPlaylist;
+
+    const State = {
+        // FPS VE PERFORMANS AYARLARI
+        pixelated: true,
+        resScale: 1.0,
+        smartAfk: true,
+        removeAds: true,
+        // CAN & SET AYARLARI
+        lowHpWarning: true,
+        lowHpThreshold: 60,
+        currentHp: 100,
+        maxHp: 100,
+        // OTO-SPAM
+        autoChatEnabled: true,
+        autoSpamRunning: false,
+        autoChatMessage: savedMsg,
+        autoChatKey: savedKey,
+        autoChatKeyName: savedKeyName,
+        antiMute: true,
+        spamIntervalMs: 2200,
+        // PARKUR & KEYSTROKES
+        showTimer: true,
+        timerColor: '#a78bfa',
+        timerSize: 18,
+        showKeystrokes: true,
+        showCps: true,
+        fps: 0,
+        lmbCps: 0,
+        rmbCps: 0
+    };
+
+    let isBindingKey = false;
+
+    // ==========================================
+    // 2. CANVAS & GPU OPTİMİZASYON MOTORU
+    // ==========================================
+    function applyCanvasOptimizations() {
+        document.querySelectorAll('canvas').forEach(canvas => {
+            canvas.style.imageRendering = State.pixelated ? 'pixelated' : 'auto';
+            if (State.resScale !== 1.0) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.width && rect.height) {
+                    const targetW = Math.round(rect.width * State.resScale);
+                    const targetH = Math.round(rect.height * State.resScale);
+                    if (canvas.width !== targetW || canvas.height !== targetH) {
+                        canvas.width = targetW;
+                        canvas.height = targetH;
+                    }
+                }
+            }
+        });
+    }
+    setInterval(applyCanvasOptimizations, 2000);
+
+    function removeJunkElements() {
+        if (!State.removeAds) return;
+        const selectors = [
+            'iframe[src*="ad"]', 'iframe[id*="ad"]', 'div[class*="ad-"]', 
+            '.adsbygoogle', '#ad-banner', '#preroll', 'div[id*="ad"]'
+        ];
+        selectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach(el => {
+                if (el.closest('#opt-menu-container')) return;
+                el.remove();
+            });
+        });
+    }
+    const junkInterval = setInterval(removeJunkElements, 2500);
+
+    // Akıllı AFK Motoru
+    let isTabSleeping = false;
+    const visibilityHandler = () => {
+        if (!State.smartAfk) {
+            isTabSleeping = false;
+            return;
+        }
+        isTabSleeping = document.hidden;
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+
+    // ==========================================
+    // 3. 100+ SET DESTEKLİ CAN MOTORU
+    // ==========================================
+    function detectRealHealth() {
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+
+        const isMenu = (el) => {
+            return !el || el.closest('#opt-menu-container') ||
+                   el.closest('#opt-cps-hud') ||
+                   el.closest('#opt-keystrokes-hud') ||
+                   el.closest('#opt-timer-hud') ||
+                   el.closest('#opt-hp-banner') ||
+                   el.closest('#opt-hp-vignette');
+        };
+
+        const allText = document.querySelectorAll('div, span, p');
+        for (let i = 0; i < allText.length; i++) {
+            const el = allText[i];
+            if (isMenu(el)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.top > H * 0.50 && rect.bottom <= H) {
+                const txt = el.textContent ? el.textContent.trim() : '';
+                const slashM = txt.match(/^(\d{1,4})\s*\/\s*(\d{1,4})$/);
+                if (slashM) {
+                    const current = parseInt(slashM[1], 10);
+                    const max = parseInt(slashM[2], 10);
+                    if (max > 0 && current > 0) {
+                        State.maxHp = Math.max(100, max);
+                        return current;
+                    }
+                }
+                const hpM = txt.match(/^(\d{1,4})\s*hp$/i);
+                if (hpM) {
+                    const val = parseInt(hpM[1], 10);
+                    if (val > 0) {
+                        if (val > State.maxHp) State.maxHp = val;
+                        return val;
+                    }
+                }
+            }
+        }
+
+        const allDivs = document.querySelectorAll('div');
+        for (let i = 0; i < allDivs.length; i++) {
+            const el = allDivs[i];
+            if (isMenu(el)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.top > H * 0.60 && rect.bottom <= H && rect.left > W * 0.08 && rect.right < W * 0.92) {
+                if (rect.height >= 3 && rect.height <= 36 && rect.width > 2) {
+                    const style = window.getComputedStyle(el);
+                    const bg = style.backgroundColor || '';
+                    const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                    if (m) {
+                        const r = parseInt(m[1], 10), g = parseInt(m[2], 10), b = parseInt(m[3], 10);
+                        const isRed = (r > 155 && g < 115 && b < 115);
+                        const isGreen = (g > 135 && r < 135);
+                        const isOrange = (r > 175 && g > 85 && g < 185 && b < 85);
+
+                        if (isRed || isGreen || isOrange) {
+                            let ratioPercent = null;
+                            const wStr = el.style.width || '';
+                            if (wStr.includes('%')) ratioPercent = parseFloat(wStr);
+
+                            if (ratioPercent === null) {
+                                const transform = el.style.transform || '';
+                                const scaleM = transform.match(/scaleX\(([\d.]+)\)/i);
+                                if (scaleM) ratioPercent = parseFloat(scaleM[1]) * 100;
+                            }
+
+                            if (ratioPercent === null && el.parentElement) {
+                                const parentW = el.parentElement.getBoundingClientRect().width;
+                                if (parentW >= 40 && parentW <= 500) {
+                                    ratioPercent = (rect.width / parentW) * 100;
+                                }
+                            }
+
+                            if (ratioPercent !== null && !isNaN(ratioPercent) && ratioPercent > 0) {
+                                const calculated = Math.round((ratioPercent / 100) * State.maxHp);
+                                return Math.min(State.maxHp, calculated);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    function playWarningBeep() {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(750, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.25);
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.26);
+        } catch(e) {}
+    }
+
+    let wasLowHp = false;
+    function autoHealthLoop() {
+        const hp = detectRealHealth();
+        if (hp !== null) {
+            State.currentHp = hp;
+            if (hp > State.maxHp) State.maxHp = hp;
+
+            const liveHpEl = document.getElementById('live-hp-display');
+            if (liveHpEl) {
+                liveHpEl.innerText = `${hp} / ${State.maxHp} HP`;
+                liveHpEl.style.color = hp <= State.lowHpThreshold ? "#f87171" : "#34d399";
+            }
+        }
+
+        if (!State.lowHpWarning) {
+            hideHpWarning();
+            return;
+        }
+
+        if (State.currentHp !== null && State.currentHp <= State.lowHpThreshold && State.currentHp > 0) {
+            showHpWarning(State.currentHp);
+            if (!wasLowHp) {
+                playWarningBeep();
+                wasLowHp = true;
+            }
+        } else {
+            hideHpWarning();
+            wasLowHp = false;
+        }
+    }
+
+    function showHpWarning(currentHp) {
+        let vignette = document.getElementById('opt-hp-vignette');
+        let banner = document.getElementById('opt-hp-banner');
+        if (vignette) vignette.style.display = 'block';
+        if (banner) {
+            banner.style.display = 'block';
+            banner.innerHTML = `⚠️ DİKKAT: CANINIZ KRİTİK! (${currentHp} / ${State.maxHp} HP) ⚠️`;
+        }
+    }
+
+    function hideHpWarning() {
+        let vignette = document.getElementById('opt-hp-vignette');
+        let banner = document.getElementById('opt-hp-banner');
+        if (vignette) vignette.style.display = 'none';
+        if (banner) banner.style.display = 'none';
+    }
+    const hpInterval = setInterval(autoHealthLoop, 100);
+
+    // ==========================================
+    // 4. OTO-SPAM & OTOMATİK ENTER
+    // ==========================================
+    let antiMuteCycle = 0;
+    let autoSpamTimer = null;
+
+    function findBloxdChatInput() {
+        return document.querySelector('.ChatInput') ||
+               document.querySelector('input.ChatInput') ||
+               document.querySelector('input[class*="Chat"]') ||
+               document.querySelector('#chatInput') ||
+               document.querySelector('.chat-input') ||
+               document.querySelector('textarea.ChatInput') ||
+               document.querySelector('input:not([id^="opt-"]):not([type="checkbox"]):not([type="range"])');
+    }
+
+    function sendSingleChatMessage() {
+        if (!State.autoChatEnabled) return;
+        const inputField = document.getElementById('input-autochat-msg');
+        const rawText = inputField ? inputField.value : State.autoChatMessage;
+        if (!rawText) return;
+
+        let textToSend = rawText;
+        if (State.antiMute) {
+            antiMuteCycle = (antiMuteCycle % 10) + 1;
+            textToSend = `${rawText} ${'.'.repeat(antiMuteCycle)}`;
+        }
+
+        function triggerSubmit(inputEl) {
+            inputEl.focus();
+            const proto = inputEl instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            if (nativeSetter) nativeSetter.call(inputEl, textToSend);
+            else inputEl.value = textToSend;
+
+            inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+            setTimeout(() => {
+                function makeEnter(type) {
+                    const ev = new KeyboardEvent(type, {
+                        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                        bubbles: true, cancelable: true, composed: true, view: window
+                    });
+                    Object.defineProperty(ev, 'keyCode', { get: () => 13 });
+                    Object.defineProperty(ev, 'which', { get: () => 13 });
+                    return ev;
+                }
+
+                inputEl.dispatchEvent(makeEnter('keydown'));
+                inputEl.dispatchEvent(makeEnter('keypress'));
+                inputEl.dispatchEvent(makeEnter('keyup'));
+
+                if (inputEl.form) {
+                    try { inputEl.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); } catch(e) {}
+                }
+                document.dispatchEvent(makeEnter('keydown'));
+
+                setTimeout(() => {
+                    const canvas = document.querySelector('canvas');
+                    if (canvas && document.activeElement === inputEl) {
+                        inputEl.blur();
+                        canvas.focus();
+                    }
+                }, 80);
+            }, 50);
+        }
+
+        let chatInput = findBloxdChatInput();
+        if (chatInput) {
+            triggerSubmit(chatInput);
+        } else {
+            const canvas = document.querySelector('canvas') || document.body;
+            const openEv = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+            Object.defineProperty(openEv, 'keyCode', { get: () => 13 });
+            Object.defineProperty(openEv, 'which', { get: () => 13 });
+            canvas.dispatchEvent(openEv);
+
+            setTimeout(() => {
+                chatInput = findBloxdChatInput();
+                if (chatInput) triggerSubmit(chatInput);
+            }, 70);
+        }
+    }
+
+    function toggleAutoSpamEngine() {
+        if (!State.autoChatEnabled) return alert("Önce Oto-Yazma anahtarını açın!");
+        if (State.autoSpamRunning) stopAutoSpamEngine();
+        else startAutoSpamEngine();
+    }
+
+    function startAutoSpamEngine() {
+        State.autoSpamRunning = true;
+        sendSingleChatMessage();
+
+        if (autoSpamTimer) clearInterval(autoSpamTimer);
+        autoSpamTimer = setInterval(() => {
+            if (!State.autoSpamRunning || !State.autoChatEnabled) {
+                stopAutoSpamEngine();
+                return;
+            }
+            sendSingleChatMessage();
+        }, State.spamIntervalMs);
+
+        updateSpamUIState();
+    }
+
+    function stopAutoSpamEngine() {
+        State.autoSpamRunning = false;
+        if (autoSpamTimer) {
+            clearInterval(autoSpamTimer);
+            autoSpamTimer = null;
+        }
+        updateSpamUIState();
+    }
+
+    function updateSpamUIState() {
+        const btn = document.getElementById('btn-toggle-spam-loop');
+        const badge = document.getElementById('spam-status-badge');
+        if (!btn || !badge) return;
+
+        if (State.autoSpamRunning) {
+            btn.innerText = `⏹ Oto-Spamı Durdur (${State.autoChatKeyName})`;
+            btn.style.background = "linear-gradient(135deg, #ef4444, #dc2626)";
+            badge.innerText = `🟢 ÇALIŞIYOR (${State.autoChatKeyName} ile durdur)`;
+            badge.style.color = "#34d399";
+        } else {
+            btn.innerText = `▶ Oto-Spamı Başlat (${State.autoChatKeyName})`;
+            btn.style.background = "linear-gradient(135deg, #10b981, #059669)";
+            badge.innerText = "🔴 DURDURULDU";
+            badge.style.color = "#f87171";
+        }
+    }
+
+    // ==========================================
+    // 5. KLAVYE DİNLİYİCİSİ & KEYSTROKES
+    // ==========================================
+    const keysPressed = { KeyW: false, KeyA: false, KeyS: false, KeyD: false, Space: false, LMB: false, RMB: false };
+
+    function updateKeystrokesUI() {
+        if (!State.showKeystrokes) return;
+        const mapping = { KeyW: 'ks-key-w', KeyA: 'ks-key-a', KeyS: 'ks-key-s', KeyD: 'ks-key-d', Space: 'ks-key-space', LMB: 'ks-key-lmb', RMB: 'ks-key-rmb' };
+        for (const [code, id] of Object.entries(mapping)) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('active', keysPressed[code]);
+        }
+    }
+
+    // Parkur Kronometresi Fonksiyonları
+    let timerRunning = false;
+    let timerStartTime = 0;
+    let timerElapsedTime = 0;
+
+    function toggleTimer() {
+        if (timerRunning) {
+            timerRunning = false;
+            timerElapsedTime += performance.now() - timerStartTime;
+        } else {
+            timerRunning = true;
+            timerStartTime = performance.now();
+        }
+    }
+
+    function resetTimer() {
+        timerRunning = false;
+        timerElapsedTime = 0;
+        const timeEl = document.getElementById('timer-time');
+        if (timeEl) timeEl.innerText = "00:00.00";
+    }
+
+    function updateTimerDisplay() {
+        if (!timerRunning) return;
+        const totalMs = timerElapsedTime + (performance.now() - timerStartTime);
+        const mins = Math.floor(totalMs / 60000);
+        const secs = Math.floor((totalMs % 60000) / 1000);
+        const ms = Math.floor((totalMs % 1000) / 10);
+        const timeEl = document.getElementById('timer-time');
+        if (timeEl) {
+            timeEl.innerText = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+        }
+    }
+
+    const globalKeydownHandler = (e) => {
+        if (isBindingKey) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            State.autoChatKey = e.code;
+            State.autoChatKeyName = e.key.length === 1 ? e.key.toUpperCase() : e.code.replace('Key', '').replace('Digit', '');
+
+            localStorage.setItem('bloxd_vip_chat_key', State.autoChatKey);
+            localStorage.setItem('bloxd_vip_chat_key_name', State.autoChatKeyName);
+
+            isBindingKey = false;
+            const btnBind = document.getElementById('btn-bind-key');
+            if (btnBind) {
+                btnBind.innerText = `⌨️ Tuş: ${State.autoChatKeyName} (Değiştirmek İçin Tıkla)`;
+                btnBind.style.borderColor = '#10b981';
+                btnBind.style.color = '#fff';
+            }
+            updateSpamUIState();
+            return;
+        }
+
+        if (e.code in keysPressed) {
+            keysPressed[e.code] = true;
+            updateKeystrokesUI();
+        }
+
+        if (!e.target.closest('input') && !e.target.closest('textarea')) {
+            if (e.code === 'KeyK') toggleTimer();
+            if (e.code === 'KeyL') resetTimer();
+        }
+
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+        const targetCode = String(State.autoChatKey).toUpperCase();
+        const targetName = String(State.autoChatKeyName).toUpperCase();
+        const currentCode = String(e.code || '').toUpperCase();
+        const currentKey = String(e.key || '').toUpperCase();
+
+        if (currentCode === targetCode || currentKey === targetName) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleAutoSpamEngine();
+        }
+    };
+    window.addEventListener('keydown', globalKeydownHandler, true);
+
+    window.addEventListener('keyup', (e) => {
+        if (e.code in keysPressed) {
+            keysPressed[e.code] = false;
+            updateKeystrokesUI();
+        }
+    }, true);
+
+    window.addEventListener('mousedown', (e) => {
+        if (e.target.closest('#opt-menu-container') || e.target.closest('#opt-toggle-btn') || e.target.closest('#opt-timer-hud') || e.target.closest('#opt-keystrokes-hud')) return;
+        const now = performance.now();
+        if (e.button === 0) { keysPressed.LMB = true; lmbClicks.push(now); }
+        if (e.button === 2) { keysPressed.RMB = true; rmbClicks.push(now); }
+        updateKeystrokesUI();
+    }, true);
+
+    window.addEventListener('mouseup', (e) => {
+        if (e.button === 0) keysPressed.LMB = false;
+        if (e.button === 2) keysPressed.RMB = false;
+        updateKeystrokesUI();
+    }, true);
+
+    // ==========================================
+    // 6. FPS & CPS DÖNGÜSÜ
+    // ==========================================
+    const lmbClicks = [];
+    const rmbClicks = [];
+    let lastFpsTime = performance.now(), frameCount = 0;
+
+    function mainLoop() {
+        if (isTabSleeping && State.smartAfk) {
+            setTimeout(() => requestAnimationFrame(mainLoop), 100);
+            return;
+        }
+
+        const now = performance.now();
+        frameCount++;
+        if (now - lastFpsTime >= 1000) {
+            State.fps = frameCount;
+            frameCount = 0;
+            lastFpsTime = now;
+            const fpsEl = document.getElementById('opt-fps-display');
+            if (fpsEl) fpsEl.innerText = `${State.fps} FPS`;
+        }
+
+        while (lmbClicks.length && lmbClicks[0] <= now - 1000) lmbClicks.shift();
+        while (rmbClicks.length && rmbClicks[0] <= now - 1000) rmbClicks.shift();
+        State.lmbCps = lmbClicks.length;
+        State.rmbCps = rmbClicks.length;
+
+        const lmbDisplay = document.getElementById('cps-lmb');
+        const rmbDisplay = document.getElementById('cps-rmb');
+        if (lmbDisplay) lmbDisplay.innerText = State.lmbCps;
+        if (rmbDisplay) rmbDisplay.innerText = State.rmbCps;
+
+        updateTimerDisplay();
+        requestAnimationFrame(mainLoop);
+    }
+    requestAnimationFrame(mainLoop);
+
+    // ==========================================
+    // 7. YOUTUBE OYNATICI
+    // ==========================================
+    function extractYouTubeId(url) {
+        if (!url) return null;
+        const match = url.trim().match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|watch\?v=|watch\?.+&v=))([\w-]{11})/i) || url.match(/^([\w-]{11})$/);
+        return match ? match[1] : null;
+    }
+
+    function playYouTubeTrack(url, title) {
+        const ytId = extractYouTubeId(url);
+        const container = document.getElementById('vip-yt-container');
+        const trackDisplay = document.getElementById('audio-track-display');
+        if (!ytId) return alert("Geçersiz link!");
+
+        if (container) {
+            container.innerHTML = `
+                <iframe id="vip-yt-frame" src="https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&enablejsapi=1&playsinline=1" 
+                style="width: 100%; height: 160px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); margin-top: 6px;" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+            `;
+            if (trackDisplay) trackDisplay.innerHTML = `▶ Çalıyor: <span style="color:#34d399;">${title || 'Müzik'}</span>`;
+        }
+    }
+
+    // ==========================================
+    // 8. TEK TIKLA PROFİL UYGULAYICI
+    // ==========================================
+    function applyProfile(type) {
+        const toggleLowHp = document.getElementById('toggle-lowhp');
+        const toggleCps = document.getElementById('toggle-cps');
+        const togglePixel = document.getElementById('toggle-pixel');
+        const toggleAutoChat = document.getElementById('toggle-autochat');
+        const sliderScale = document.getElementById('scale-slider');
+        const scaleVal = document.getElementById('scale-val');
+        const cpsHud = document.getElementById('opt-cps-hud');
+        const menu = document.getElementById('opt-menu-container');
+
+        stopAutoSpamEngine();
+
+        if (type === 'pvp') {
+            State.lowHpWarning = true;
+            State.showCps = true;
+            State.pixelated = true;
+            State.autoChatEnabled = true;
+            State.resScale = 1.0;
+        } else if (type === 'parkour') {
+            State.lowHpWarning = false;
+            State.showCps = true;
+            State.pixelated = false;
+            State.autoChatEnabled = false;
+            State.resScale = 1.0;
+        } else if (type === 'cinema') {
+            State.lowHpWarning = false;
+            State.showCps = false;
+            State.pixelated = false;
+            State.resScale = 1.0;
+            menu.classList.add('hidden');
+        }
+
+        if (toggleLowHp) toggleLowHp.checked = State.lowHpWarning;
+        if (toggleCps) toggleCps.checked = State.showCps;
+        if (togglePixel) togglePixel.checked = State.pixelated;
+        if (toggleAutoChat) toggleAutoChat.checked = State.autoChatEnabled;
+        if (sliderScale) sliderScale.value = State.resScale;
+        if (scaleVal) scaleVal.innerText = `${State.resScale.toFixed(1)}x`;
+        if (cpsHud) cpsHud.classList.toggle('hidden', !State.showCps);
+
+        applyCanvasOptimizations();
+    }
+
+    // ==========================================
+    // 9. ARAYÜZ (GUI)
+    // ==========================================
+    function initUI() {
+        if (document.getElementById('opt-menu-container')) return;
+
+        const style = document.createElement('style');
+        style.innerHTML = `
+            #opt-menu-container {
+                position: fixed; top: 45px; right: 20px; width: 350px;
+                background: rgba(13, 17, 23, 0.95); backdrop-filter: blur(14px);
+                border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px;
+                color: #f0f6fc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                box-shadow: 0 16px 36px rgba(0,0,0,0.6), 0 0 20px rgba(124, 58, 237, 0.25);
+                z-index: 9999999; user-select: none; transition: opacity 0.2s, transform 0.2s;
+                max-height: 90vh; overflow-y: auto;
+            }
+            #opt-menu-container.hidden { opacity: 0; transform: scale(0.95); pointer-events: none; }
+            .opt-header {
+                background: linear-gradient(135deg, rgba(124, 58, 237, 0.45), rgba(37, 99, 235, 0.25));
+                padding: 10px 14px; display: flex; align-items: center; justify-content: space-between;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08); cursor: move;
+            }
+            .opt-title { font-size: 13px; font-weight: 700; background: linear-gradient(90deg, #a78bfa, #60a5fa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .opt-fps-badge { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.3); border-radius: 20px; padding: 1px 7px; font-size: 11px; font-weight: 600; }
+            
+            .opt-profiles-bar { display: flex; gap: 6px; padding: 8px 14px; background: rgba(22, 27, 34, 0.85); border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+            .opt-profile-btn { flex: 1; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.04); color: #c9d1d9; border-radius: 6px; padding: 5px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+            .opt-profile-btn:hover { background: rgba(124, 58, 237, 0.3); border-color: #a78bfa; color: #fff; }
+
+            .opt-tabs { display: flex; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(22, 27, 34, 0.6); }
+            .opt-tab-btn { flex: 1; padding: 8px 6px; font-size: 11px; font-weight: 600; text-align: center; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
+            .opt-tab-btn.active { color: #fff; border-bottom: 2px solid #a78bfa; background: rgba(124, 58, 237, 0.15); }
+
+            .opt-page { padding: 12px 14px; display: flex; flex-direction: column; gap: 11px; }
+            .opt-page.hidden { display: none; }
+            .opt-section-title { font-size: 11px; font-weight: 700; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 4px; }
+            .opt-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #c9d1d9; }
+            
+            .opt-switch { position: relative; display: inline-block; width: 36px; height: 18px; }
+            .opt-switch input { opacity: 0; width: 0; height: 0; }
+            .opt-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #21262d; border: 1px solid rgba(255,255,255,0.15); transition: .25s; border-radius: 20px; }
+            .opt-slider:before { position: absolute; content: ""; height: 12px; width: 12px; left: 2px; bottom: 2px; background-color: #8b949e; transition: .25s; border-radius: 50%; }
+            input:checked + .opt-slider { background-color: #7c3aed; }
+            input:checked + .opt-slider:before { transform: translateX(18px); background-color: #ffffff; }
+
+            .opt-input { background: #161b22; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; color: #fff; padding: 6px 10px; font-size: 11.5px; outline: none; width: 100%; box-sizing: border-box; }
+            .opt-input:focus { border-color: #a78bfa; }
+            .opt-btn { background: linear-gradient(135deg, #7c3aed, #4f46e5); border: none; color: white; padding: 7px 10px; font-size: 11px; font-weight: 600; border-radius: 6px; cursor: pointer; text-align: center; }
+            .opt-btn:hover { filter: brightness(1.15); }
+            .opt-range { width: 100%; height: 4px; accent-color: #7c3aed; cursor: pointer; }
+
+            #btn-bind-key {
+                background: #161b22; border: 1px solid #7c3aed; color: #a78bfa;
+                padding: 7px 10px; font-size: 11.5px; font-weight: 700; border-radius: 6px;
+                cursor: pointer; width: 100%; transition: all 0.2s; text-align: center;
+            }
+
+            #opt-hp-vignette { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999990; box-shadow: inset 0 0 90px rgba(239, 68, 68, 0.9), inset 0 0 170px rgba(220, 38, 38, 0.6); display: none; animation: hpPulse 0.9s infinite ease-in-out; }
+            @keyframes hpPulse { 0% { opacity: 0.4; } 50% { opacity: 0.95; } 100% { opacity: 0.4; } }
+            #opt-hp-banner { position: fixed; top: 12%; left: 50%; transform: translateX(-50%); background: rgba(185, 28, 28, 0.92); backdrop-filter: blur(8px); border: 2px solid #f87171; border-radius: 12px; padding: 8px 22px; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 800; letter-spacing: 0.5px; z-index: 999995; box-shadow: 0 0 25px rgba(239, 68, 68, 0.7); display: none; pointer-events: none; }
+
+            #opt-cps-hud { position: fixed; top: 15px; left: 20px; background: rgba(13, 17, 23, 0.85); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px; padding: 6px 14px; display: flex; gap: 10px; font-size: 12px; font-weight: 600; color: #fff; z-index: 9999991; }
+            #opt-cps-hud.hidden { display: none; }
+            #opt-toggle-btn { position: fixed; bottom: 20px; left: 20px; width: 36px; height: 36px; border-radius: 10px; background: rgba(13, 17, 23, 0.75); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.12); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 9999998; }
+
+            #opt-keystrokes-hud { position: fixed; bottom: 80px; left: 20px; background: rgba(13, 17, 23, 0.80); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 5px; align-items: center; z-index: 9999992; cursor: move; }
+            #opt-keystrokes-hud.hidden { display: none; }
+            .ks-row { display: flex; gap: 5px; }
+            .ks-key { width: 38px; height: 38px; background: rgba(22, 27, 34, 0.85); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #8b949e; font-weight: 700; font-size: 13px; }
+            .ks-key.space { width: 124px; height: 26px; font-size: 10px; }
+            .ks-key.mouse { width: 60px; height: 28px; font-size: 11px; }
+            .ks-key.active { background: #7c3aed; color: #fff; border-color: #a78bfa; box-shadow: 0 0 12px rgba(124, 58, 237, 0.7); }
+
+            #opt-timer-hud { position: fixed; top: 60px; left: 20px; background: rgba(13, 17, 23, 0.85); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; z-index: 9999992; cursor: move; }
+            #opt-timer-hud.hidden { display: none; }
+            #timer-time { font-family: 'Courier New', monospace; font-weight: 800; }
+            .timer-controls { display: flex; gap: 6px; }
+            .timer-btn { background: rgba(255,255,255,0.1); border: none; color: #fff; font-size: 10px; padding: 2px 8px; border-radius: 4px; cursor: pointer; }
+
+            .playlist-container { display: flex; flex-direction: column; gap: 6px; max-height: 190px; overflow-y: auto; }
+            .playlist-item { background: rgba(22, 27, 34, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+            .playlist-title { font-size: 11.5px; color: #f0f6fc; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+            .track-info { font-size: 11px; color: #a78bfa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 6px; font-weight: 600; }
+        `;
+        document.head.appendChild(style);
+
+        const hpVignette = document.createElement('div'); hpVignette.id = 'opt-hp-vignette'; document.body.appendChild(hpVignette);
+        const hpBanner = document.createElement('div'); hpBanner.id = 'opt-hp-banner'; document.body.appendChild(hpBanner);
+        const cpsHud = document.createElement('div'); cpsHud.id = 'opt-cps-hud'; cpsHud.innerHTML = `<div>LMB: <span id="cps-lmb" style="color:#a78bfa;">0</span></div><span style="opacity:0.2;">|</span><div>RMB: <span id="cps-rmb" style="color:#a78bfa;">0</span></div>`; document.body.appendChild(cpsHud);
+
+        const timerHud = document.createElement('div'); timerHud.id = 'opt-timer-hud';
+        timerHud.innerHTML = `<div id="timer-time" style="color: ${State.timerColor}; font-size: ${State.timerSize}px;">00:00.00</div><div class="timer-controls"><button class="timer-btn" id="btn-hud-timer-toggle">Başlat [K]</button><button class="timer-btn" id="btn-hud-timer-reset">Sıfırla [L]</button></div>`;
+        document.body.appendChild(timerHud);
+
+        const keystrokesHud = document.createElement('div'); keystrokesHud.id = 'opt-keystrokes-hud';
+        keystrokesHud.innerHTML = `<div class="ks-row"><div class="ks-key" id="ks-key-w">W</div></div><div class="ks-row"><div class="ks-key" id="ks-key-a">A</div><div class="ks-key" id="ks-key-s">S</div><div class="ks-key" id="ks-key-d">D</div></div><div class="ks-row"><div class="ks-key mouse" id="ks-key-lmb">LMB</div><div class="ks-key mouse" id="ks-key-rmb">RMB</div></div><div class="ks-row"><div class="ks-key space" id="ks-key-space">SPACE</div></div>`;
+        document.body.appendChild(keystrokesHud);
+
+        const menu = document.createElement('div');
+        menu.id = 'opt-menu-container';
+        menu.innerHTML = `
+            <div class="opt-header" id="opt-drag-header">
+                <div class="opt-title">⚡ BLOXD VIP ENGINE PRO</div>
+                <div class="opt-fps-badge" id="opt-fps-display">-- FPS</div>
+            </div>
+
+            <!-- TEK TIKLA PROFİLLER -->
+            <div class="opt-profiles-bar">
+                <button class="opt-profile-btn" id="btn-prof-pvp">⚔️ PvP</button>
+                <button class="opt-profile-btn" id="btn-prof-parkour">🏃 Parkur</button>
+                <button class="opt-profile-btn" id="btn-prof-cinema">🎬 Sinematik</button>
+            </div>
+
+            <div class="opt-tabs">
+                <div class="opt-tab-btn active" id="tab-btn-settings">⚙️ Ayarlar & Chat</div>
+                <div class="opt-tab-btn" id="tab-btn-music">🎵 YouTube</div>
+                <div class="opt-tab-btn" id="tab-btn-parkour">🏃 Tuşlar & Parkur</div>
+            </div>
+
+            <div class="opt-page" id="page-settings">
+                <!-- ORİJİNAL PERFORMANS & FPS BOOST BÖLÜMÜ -->
+                <div class="opt-section-title">⚡ Performans & GPU Boost (FPS)</div>
+                <div class="opt-row">
+                    <span>Pixelated Render (Hafif GPU)</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-pixel" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:3px;">
+                    <div class="opt-row">
+                        <span>Çözünürlük Çarpanı (FPS Artırıcı):</span>
+                        <span id="scale-val" style="color:#a78bfa; font-weight:700;">1.0x</span>
+                    </div>
+                    <input type="range" class="opt-range" id="scale-slider" min="0.5" max="1.0" step="0.1" value="1.0">
+                </div>
+                <div class="opt-row">
+                    <span>Akıllı AFK Modu (Arka Planda 10 FPS)</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-afk" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <button class="opt-btn" id="btn-force-clean" style="background: linear-gradient(135deg, #4f46e5, #3730a3);">🧹 Belleği Temizle & Yenile (RAM Flush)</button>
+
+                <!-- CAN TAKİP & SET BÖLÜMÜ -->
+                <div class="opt-section-title">🩸 Can Takip & Zırh Desteği</div>
+                <div class="opt-row" style="background: rgba(0,0,0,0.4); padding: 8px 10px; border-radius: 8px;">
+                    <span>🎮 Algılanan Can:</span>
+                    <span id="live-hp-display" style="font-weight: 800; font-size: 13px; color: #34d399;">100 / 100 HP</span>
+                </div>
+                <div class="opt-row">
+                    <span>Düşük Can Alarmı</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-lowhp" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:3px;">
+                    <div class="opt-row">
+                        <span>Tehlike Uyarı Eşiği:</span>
+                        <span id="hp-threshold-val" style="color:#f87171; font-weight:700;">${State.lowHpThreshold} HP</span>
+                    </div>
+                    <input type="range" class="opt-range" id="slider-hp-threshold" min="30" max="150" step="5" value="${State.lowHpThreshold}">
+                </div>
+
+                <!-- OTO-SPAM BÖLÜMÜ -->
+                <div class="opt-section-title">💬 Oto-Spam & Chat Botu</div>
+                <div class="opt-row">
+                    <span>Oto-Yazma Anahtarı</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-autochat" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div class="opt-row">
+                    <span>Spam Durumu:</span>
+                    <span id="spam-status-badge" style="color: #f87171; font-weight:700;">🔴 DURDURULDU</span>
+                </div>
+                <button class="opt-btn" id="btn-toggle-spam-loop" style="background: linear-gradient(135deg, #10b981, #059669); font-weight:700;">▶ Oto-Spamı Başlat (${State.autoChatKeyName})</button>
+
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <span style="font-size: 11px; color: #8b949e;">Mesajınız:</span>
+                    <input type="text" class="opt-input" id="input-autochat-msg" value="${State.autoChatMessage}">
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <span style="font-size: 11px; color: #8b949e;">Açma/Kapatma Tuşu:</span>
+                    <button id="btn-bind-key">⌨️ Tuş: ${State.autoChatKeyName} (Değiştirmek İçin Tıkla)</button>
+                </div>
+            </div>
+
+            <!-- 2. SAYFA: YOUTUBE -->
+            <div class="opt-page hidden" id="page-music">
+                <div class="track-info" id="audio-track-display">Şu An: Çalan Şarkı Yok</div>
+                <div id="vip-yt-container"></div>
+                <div class="playlist-container" id="playlist-list"></div>
+                <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 5px;">
+                    <input type="text" class="opt-input" id="new-song-title" placeholder="Şarkı Adı">
+                    <input type="text" class="opt-input" id="new-song-url" placeholder="YouTube Linki">
+                    <button class="opt-btn" id="btn-add-song">+ Listeye Ekle</button>
+                </div>
+            </div>
+
+            <!-- 3. SAYFA: TUŞLAR & PARKUR -->
+            <div class="opt-page hidden" id="page-parkour">
+                <div class="opt-section-title">⌨️ Keystrokes HUD</div>
+                <div class="opt-row">
+                    <span>Tuş Göstergesi (HUD)</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-keystrokes" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div class="opt-row">
+                    <span>CPS Göstergesi</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-cps" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+
+                <div class="opt-section-title">⏱️ Parkur Kronometresi</div>
+                <div class="opt-row">
+                    <span>Kronometreyi Göster</span>
+                    <label class="opt-switch">
+                        <input type="checkbox" id="toggle-timer" checked>
+                        <span class="opt-slider"></span>
+                    </label>
+                </div>
+                <div style="display:flex; gap:6px; margin-top: 4px;">
+                    <button class="opt-btn" id="btn-menu-timer-toggle" style="flex:1;">Başlat [K]</button>
+                    <button class="opt-btn" id="btn-menu-timer-reset" style="flex:1; background: #21262d;">Sıfırla [L]</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(menu);
+
+        const floatBtn = document.createElement('div');
+        floatBtn.id = 'opt-toggle-btn';
+        floatBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
+        document.body.appendChild(floatBtn);
+
+        // ==========================================
+        // 10. ETKİLEŞİMLER
+        // ==========================================
+        document.getElementById('btn-prof-pvp').addEventListener('click', () => applyProfile('pvp'));
+        document.getElementById('btn-prof-parkour').addEventListener('click', () => applyProfile('parkour'));
+        document.getElementById('btn-prof-cinema').addEventListener('click', () => applyProfile('cinema'));
+
+        // Çözünürlük Çarpanı Slider'ı
+        const scaleSlider = document.getElementById('scale-slider');
+        const scaleVal = document.getElementById('scale-val');
+        scaleSlider.addEventListener('input', (e) => {
+            State.resScale = parseFloat(e.target.value);
+            scaleVal.innerText = `${State.resScale.toFixed(1)}x`;
+            applyCanvasOptimizations();
+        });
+
+        // Pixelated Toggle
+        document.getElementById('toggle-pixel').addEventListener('change', (e) => {
+            State.pixelated = e.target.checked;
+            applyCanvasOptimizations();
+        });
+
+        // Zorla Bellek Temizleyici
+        document.getElementById('btn-force-clean').addEventListener('click', () => {
+            removeJunkElements();
+            applyCanvasOptimizations();
+            if (window.gc) window.gc();
+            alert("✨ Bellek temizlendi, çöp nesneler boşaltıldı ve FPS tazelendi!");
+        });
+
+        const sliderThreshold = document.getElementById('slider-hp-threshold');
+        const thresholdVal = document.getElementById('hp-threshold-val');
+        sliderThreshold.addEventListener('input', (e) => {
+            State.lowHpThreshold = parseInt(e.target.value, 10);
+            thresholdVal.innerText = `${State.lowHpThreshold} HP`;
+        });
+
+        const btnBind = document.getElementById('btn-bind-key');
+        btnBind.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (document.exitPointerLock) document.exitPointerLock();
+            isBindingKey = true;
+            btnBind.innerText = "⌛ Klavyeden Bir Tuşa Basın...";
+            btnBind.style.borderColor = "#f59e0b";
+            btnBind.style.color = "#f59e0b";
+        });
+
+        document.getElementById('btn-toggle-spam-loop').addEventListener('click', toggleAutoSpamEngine);
+
+        const tabBtnSettings = document.getElementById('tab-btn-settings');
+        const tabBtnMusic = document.getElementById('tab-btn-music');
+        const tabBtnParkour = document.getElementById('tab-btn-parkour');
+        const pageSettings = document.getElementById('page-settings');
+        const pageMusic = document.getElementById('page-music');
+        const pageParkour = document.getElementById('page-parkour');
+
+        function switchTab(activeBtn, activePage) {
+            [tabBtnSettings, tabBtnMusic, tabBtnParkour].forEach(b => b.classList.remove('active'));
+            [pageSettings, pageMusic, pageParkour].forEach(p => p.classList.add('hidden'));
+            activeBtn.classList.add('active');
+            activePage.classList.remove('hidden');
+        }
+
+        tabBtnSettings.addEventListener('click', () => switchTab(tabBtnSettings, pageSettings));
+        tabBtnMusic.addEventListener('click', () => switchTab(tabBtnMusic, pageMusic));
+        tabBtnParkour.addEventListener('click', () => switchTab(tabBtnParkour, pageParkour));
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Insert' || e.code === 'ShiftRight') menu.classList.toggle('hidden');
+        });
+        floatBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
+
+        menu.addEventListener('keydown', (e) => e.stopPropagation());
+        menu.addEventListener('keyup', (e) => e.stopPropagation());
+
+        const inputs = menu.querySelectorAll('input[type="text"]');
+        inputs.forEach(inp => {
+            inp.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (document.exitPointerLock) document.exitPointerLock();
+                inp.focus();
+            });
+        });
+
+        document.getElementById('toggle-keystrokes').addEventListener('change', (e) => {
+            State.showKeystrokes = e.target.checked;
+            keystrokesHud.classList.toggle('hidden', !State.showKeystrokes);
+        });
+
+        document.getElementById('toggle-cps').addEventListener('change', (e) => {
+            State.showCps = e.target.checked;
+            cpsHud.classList.toggle('hidden', !State.showCps);
+        });
+
+        document.getElementById('toggle-timer').addEventListener('change', (e) => {
+            State.showTimer = e.target.checked;
+            timerHud.classList.toggle('hidden', !State.showTimer);
+        });
+
+        document.getElementById('btn-hud-timer-toggle').addEventListener('click', toggleTimer);
+        document.getElementById('btn-hud-timer-reset').addEventListener('click', resetTimer);
+        document.getElementById('btn-menu-timer-toggle').addEventListener('click', toggleTimer);
+        document.getElementById('btn-menu-timer-reset').addEventListener('click', resetTimer);
+
+        document.getElementById('toggle-lowhp').addEventListener('change', (e) => {
+            State.lowHpWarning = e.target.checked;
+        });
+
+        document.getElementById('toggle-afk').addEventListener('change', (e) => {
+            State.smartAfk = e.target.checked;
+        });
+
+        document.getElementById('toggle-autochat').addEventListener('change', (e) => {
+            State.autoChatEnabled = e.target.checked;
+            if (!State.autoChatEnabled) stopAutoSpamEngine();
+        });
+
+        const chatInputBox = document.getElementById('input-autochat-msg');
+        chatInputBox.addEventListener('input', (e) => {
+            State.autoChatMessage = e.target.value;
+            localStorage.setItem('bloxd_vip_chat_msg', e.target.value);
+        });
+
+        // Çalma Listesi
+        const playlistContainer = document.getElementById('playlist-list');
+        function renderPlaylist() {
+            playlistContainer.innerHTML = '';
+            playlist.forEach((item, index) => {
+                const row = document.createElement('div');
+                row.className = 'playlist-item';
+                row.innerHTML = `<div class="playlist-title">🎵 ${item.title}</div><span style="color:#34d399; font-weight:bold;">▶</span>`;
+                row.addEventListener('click', () => playYouTubeTrack(item.url, item.title));
+                playlistContainer.appendChild(row);
+            });
+        }
+        renderPlaylist();
+
+        document.getElementById('btn-add-song').addEventListener('click', () => {
+            const title = document.getElementById('new-song-title').value.trim();
+            const url = document.getElementById('new-song-url').value.trim();
+            if (!title || !url) return alert("Eksik bilgi!");
+            playlist.push({ title, url });
+            localStorage.setItem('bloxd_vip_playlist', JSON.stringify(playlist));
+            renderPlaylist();
+            playYouTubeTrack(url, title);
+        });
+
+        // Sürükleme
+        function makeDraggable(headerEl, targetEl) {
+            let isDragging = false, startX, startY, initX, initY;
+            headerEl.addEventListener('mousedown', (e) => {
+                if (e.target.tagName === 'BUTTON') return;
+                isDragging = true;
+                startX = e.clientX; startY = e.clientY;
+                const rect = targetEl.getBoundingClientRect();
+                initX = rect.left; initY = rect.top;
+            });
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                targetEl.style.left = `${initX + (e.clientX - startX)}px`;
+                targetEl.style.top = `${initY + (e.clientY - startY)}px`;
+                targetEl.style.right = 'auto';
+            });
+            window.addEventListener('mouseup', () => { isDragging = false; });
+        }
+        makeDraggable(document.getElementById('opt-drag-header'), menu);
+        makeDraggable(keystrokesHud, keystrokesHud);
+        makeDraggable(timerHud, timerHud);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initUI);
+    } else {
+        initUI();
+    }
+})();
