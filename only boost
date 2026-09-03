@@ -1,0 +1,26 @@
+// 1. Log spamini sustur (FPS droplarını ve donmayı engeller)
+console.log = function() {};
+console.warn = function() {};
+console.error = function() {};
+// 2. Ses motorundaki kilitlenmeyi / gecikmeyi sıfırla
+try {
+const audioContexts = [];
+const origAudioContext = window.AudioContext || window.webkitAudioContext;
+if (origAudioContext) {
+window.AudioContext = function() {
+const ctx = new origAudioContext();
+if (ctx.state === 'suspended') {
+ctx.resume();
+}
+return ctx;
+};
+}
+} catch(e) {}
+// 3. WebGL ve Canvas üzerindeki filtre yükünü temizle
+try {
+const canvases = document.querySelectorAll('canvas');
+canvases.forEach(canvas => {
+canvas.style.imageRendering = 'pixelated';
+});
+} catch(e) {}
+console.info("Bloxd.io optimizasyon kodu uygulandı!");
