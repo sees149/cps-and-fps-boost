@@ -765,7 +765,7 @@
         menu.id = 'opt-menu-container';
         menu.innerHTML = `
             <div class="opt-header" id="opt-drag-header">
-                <div class="opt-title">⚡ BLOXD VIP ENGINE PRO</div>
+                <div class="opt-title">⚡ C0Z VIP ENGINE PRO</div>
                 <div class="opt-fps-badge" id="opt-fps-display">-- FPS</div>
             </div>
 
